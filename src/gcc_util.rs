@@ -256,7 +256,7 @@ pub fn add_pic_option<'gcc>(context: &Context<'gcc>, relocation_model: RelocMode
         rustc_target::spec::RelocModel::Pic => {
             context.add_command_line_option("-fPIC");
             // NOTE: we use both add_command_line_option and add_driver_option because the usage in
-            // this module (compile_codegen_unit) requires add_command_line_option while the usage
+            // base (compile_codegen_unit) requires add_command_line_option while the usage
             // in the back::write module (codegen) requires add_driver_option.
             context.add_driver_option("-fPIC");
         }
