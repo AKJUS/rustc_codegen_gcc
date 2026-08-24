@@ -14,17 +14,8 @@ tests/ui/attributes/fn-align-dyn.rs
 tests/ui/linkage-attr/raw-dylib/elf/glibc-x86_64.rs
 tests/ui/statics/const_generics.rs
 tests/ui/thir-print/offset_of.rs
-tests/ui/eii/default/call_impl.rs
 tests/ui/asm/x86_64/global_asm_escape.rs
 tests/ui/lto/all-crates.rs
-tests/ui/eii/static/cross_crate_decl.rs
-tests/ui/eii/static/cross_crate_def.rs
-tests/ui/eii/static/same_address.rs
-tests/ui/eii/static/simple.rs
-tests/ui/eii/static/default.rs
-tests/ui/eii/static/default_cross_crate.rs
-tests/ui/eii/static/default_explicit.rs
-tests/ui/eii/static/default_cross_crate_explicit.rs
 tests/ui/explicit-tail-calls/tailcc-no-signature-restriction.rs
 tests/ui/abi/rust-tail-cc.rs
 tests/ui/abi/rust-preserve-none-cc.rs
