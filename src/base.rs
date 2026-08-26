@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(feature = "master")]
+use gccjit::VarAttribute;
 use gccjit::{CType, FunctionType, GlobalKind};
 use rustc_codegen_ssa::ModuleCodegen;
 use rustc_codegen_ssa::base::maybe_create_entry_wrapper;
@@ -39,32 +41,72 @@ pub fn symbol_visibility_to_gcc(visibility: SymbolVisibility) -> gccjit::Visibil
     }
 }
 
+/// The kind of a global *definition* with an explicit `#[linkage]`.
+///
+/// The flavours that another object file is allowed to override also need
+/// `global_linkage_attribute` from the caller: `GlobalKind` alone cannot express weakness.
 pub fn global_linkage_to_gcc(linkage: Linkage) -> GlobalKind {
     match linkage {
-        Linkage::External => GlobalKind::Imported,
-        Linkage::AvailableExternally => GlobalKind::Imported,
-        Linkage::LinkOnceAny => unimplemented!(),
-        Linkage::LinkOnceODR => unimplemented!(),
-        Linkage::WeakAny => unimplemented!(),
-        Linkage::WeakODR => unimplemented!(),
-        Linkage::Internal => GlobalKind::Internal,
-        Linkage::ExternalWeak => GlobalKind::Imported, // FIXME(antoyo): should be weak linkage.
-        Linkage::Common => unimplemented!(),
+        Linkage::External => GlobalKind::Exported,
+        // libgccjit cannot emit a definition that the linker discards in favour of the one in
+        // another object file, so emit a private copy of it instead.
+        Linkage::AvailableExternally | Linkage::Internal => GlobalKind::Internal,
+        // libgccjit exposes no comdat, so `weak` stands in for the linkonce flavours.
+        Linkage::LinkOnceAny
+        | Linkage::LinkOnceODR
+        | Linkage::WeakAny
+        | Linkage::WeakODR
+        | Linkage::ExternalWeak
+        | Linkage::Common => GlobalKind::Exported,
     }
 }
 
+/// The attribute a global *definition* needs on top of its [`GlobalKind`] to get this linkage.
+#[cfg(feature = "master")]
+pub fn global_linkage_attribute<'gcc>(linkage: Linkage) -> Option<VarAttribute<'gcc>> {
+    match linkage {
+        Linkage::Common => Some(VarAttribute::Common),
+        _ if linkage_needs_weak_attribute(linkage) => Some(VarAttribute::Weak),
+        _ => None,
+    }
+}
+
+/// The type of a function *definition* with an explicit `#[linkage]`.
+///
+/// The flavours that another object file is allowed to override also need
+/// `linkage_needs_weak_attribute` from the caller: `FunctionType` alone cannot express weakness.
 pub fn linkage_to_gcc(linkage: Linkage) -> FunctionType {
     match linkage {
         Linkage::External => FunctionType::Exported,
-        // FIXME(antoyo): set the attribute externally_visible.
-        Linkage::AvailableExternally => FunctionType::Extern,
-        Linkage::LinkOnceAny => unimplemented!(),
-        Linkage::LinkOnceODR => unimplemented!(),
-        Linkage::WeakAny => FunctionType::Exported, // FIXME(antoyo): should be similar to linkonce.
-        Linkage::WeakODR => unimplemented!(),
-        Linkage::Internal => FunctionType::Internal,
-        Linkage::ExternalWeak => unimplemented!(),
-        Linkage::Common => unimplemented!(),
+        // libgccjit cannot emit a definition that the linker discards in favour of the one in
+        // another object file, so emit a private copy of it instead.
+        Linkage::AvailableExternally | Linkage::Internal => FunctionType::Internal,
+        // libgccjit exposes no comdat, so `weak` stands in for every overridable flavour.
+        Linkage::LinkOnceAny
+        | Linkage::LinkOnceODR
+        | Linkage::WeakAny
+        | Linkage::WeakODR
+        | Linkage::ExternalWeak
+        | Linkage::Common => FunctionType::Exported,
+    }
+}
+
+/// Whether a definition with this linkage must carry the `weak` attribute, so that a strong
+/// definition in another object file wins over it instead of clashing with it.
+///
+/// `common` is in here for functions only: GCC honours that attribute on a variable, but drops it
+/// on a function, so a common function falls back to weak. Globals go through
+/// `global_linkage_attribute` instead.
+#[cfg(feature = "master")]
+pub fn linkage_needs_weak_attribute(linkage: Linkage) -> bool {
+    match linkage {
+        Linkage::LinkOnceAny
+        | Linkage::LinkOnceODR
+        | Linkage::WeakAny
+        | Linkage::WeakODR
+        | Linkage::ExternalWeak
+        | Linkage::Common => true,
+        Linkage::External | Linkage::AvailableExternally | Linkage::Internal => false,
     }
 }
 

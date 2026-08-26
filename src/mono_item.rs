@@ -21,7 +21,7 @@ impl<'gcc, 'tcx> PreDefineCodegenMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
     fn predefine_static(
         &mut self,
         def_id: DefId,
-        _linkage: Linkage,
+        linkage: Linkage,
         visibility: Visibility,
         global_name: &str,
     ) {
@@ -47,10 +47,29 @@ impl<'gcc, 'tcx> PreDefineCodegenMethods<'tcx> for CodegenCx<'gcc, 'tcx> {
         };
 
         let is_tls = attrs.flags.contains(CodegenFnAttrFlags::THREAD_LOCAL);
-        let global = self.define_global(global_name, gcc_type, is_tls, attrs.link_section);
+        let global_kind = base::global_linkage_to_gcc(linkage);
+        let global =
+            self.define_global(global_name, gcc_type, global_kind, is_tls, attrs.link_section);
         #[cfg(feature = "master")]
-        global.add_attribute(VarAttribute::Visibility(base::visibility_to_gcc(visibility)));
-        // FIXME(antoyo): set linkage.
+        {
+            // Visibility is meaningless on an internal global: GCC ignores the attribute and
+            // warns about it.
+            if !matches!(global_kind, GlobalKind::Internal) {
+                // If we're compiling the compiler-builtins crate, e.g., the equivalent of
+                // compiler-rt, then we want to implicitly compile everything with hidden
+                // visibility as we're going to link this object all over the place but
+                // don't want the symbols to get exported.
+                let visibility = if self.tcx.is_compiler_builtins(LOCAL_CRATE) {
+                    gccjit::Visibility::Hidden
+                } else {
+                    base::visibility_to_gcc(visibility)
+                };
+                global.add_attribute(VarAttribute::Visibility(visibility));
+            }
+            if let Some(attribute) = base::global_linkage_attribute(linkage) {
+                global.add_attribute(attribute);
+            }
+        }
 
         #[cfg(feature = "master")]
         self.add_static_aliases(gcc_type, global_name, attrs, &attrs.foreign_item_symbol_aliases);
@@ -172,7 +191,7 @@ impl<'gcc, 'tcx> CodegenCx<'gcc, 'tcx> {
         attributes::from_fn_attrs(self, fn_decl, instance, Some(fn_abi));
 
         #[cfg(feature = "master")]
-        if linkage == Linkage::WeakAny {
+        if base::linkage_needs_weak_attribute(linkage) {
             fn_decl.add_attribute(FnAttribute::Weak);
         }
 

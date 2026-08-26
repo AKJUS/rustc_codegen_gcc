@@ -13,7 +13,8 @@ use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_log::tracing::trace;
 use rustc_middle::middle::codegen_fn_attrs::{CodegenFnAttrFlags, CodegenFnAttrs};
 use rustc_middle::mir::interpret::{
-    self, ConstAllocation, CtfeProvenance, ErrorHandled, Scalar as InterpScalar, read_target_uint,
+    self, Allocation, ConstAllocation, CtfeProvenance, ErrorHandled, Scalar as InterpScalar,
+    read_target_uint,
 };
 use rustc_middle::mono::MonoItem;
 use rustc_middle::ty::layout::LayoutOf;
@@ -21,7 +22,6 @@ use rustc_middle::ty::{self, Instance};
 use rustc_middle::{bug, span_bug};
 use rustc_span::def_id::DefId;
 
-use crate::base;
 use crate::common::bytes_type_in_context;
 use crate::context::CodegenCx;
 use crate::type_::struct_attributes;
@@ -113,7 +113,12 @@ impl<'gcc, 'tcx> StaticCodegenMethods for CodegenCx<'gcc, 'tcx> {
         // NOTE: Alignment from attributes has already been applied to the allocation.
         set_global_alignment(self, global, alloc.align);
 
-        global.global_set_initializer_rvalue(value);
+        // A common symbol is storage the linker allocates and zero-fills, so giving the definition
+        // an initializer — even an all-zero one — takes it back out of `.comm`. A non-zero one is
+        // kept: the symbol is then an ordinary definition, which is what GCC does with it too.
+        if attrs.linkage != Some(Linkage::Common) || !is_zero_initializer(alloc) {
+            global.global_set_initializer_rvalue(value);
+        }
 
         // As an optimization, all shared statics which do not have interior
         // mutability are placed into read-only memory.
@@ -453,6 +458,17 @@ pub(crate) fn const_alloc_to_gcc_uncached<'gcc>(
     cx.const_struct(&llvals, true)
 }
 
+/// Whether this allocation is all zeroes, and so needs no initializer to be spelled out.
+fn is_zero_initializer(alloc: &Allocation) -> bool {
+    alloc.provenance().ptrs().is_empty()
+        // This `inspect` is okay: it is within the bounds of the allocation, there is no provenance
+        // to misread, and it does not affect interpreter execution.
+        && alloc
+            .inspect_with_uninit_and_ptr_outside_interpreter(0..alloc.size().bytes_usize())
+            .iter()
+            .all(|&byte| byte == 0)
+}
+
 fn codegen_static_initializer<'gcc, 'tcx>(
     cx: &CodegenCx<'gcc, 'tcx>,
     def_id: DefId,
@@ -469,10 +485,10 @@ fn check_and_apply_linkage<'gcc, 'tcx>(
 ) -> LValue<'gcc> {
     let is_tls = attrs.flags.contains(CodegenFnAttrFlags::THREAD_LOCAL);
     if let Some(linkage) = attrs.import_linkage {
-        // Declare a symbol `foo` with the desired linkage.
-        let global1 =
-            cx.declare_global_with_linkage(sym, cx.type_i8(), base::global_linkage_to_gcc(linkage));
+        // Whatever the flavour, an import is an undefined reference to a symbol defined elsewhere.
+        let global1 = cx.declare_global_with_linkage(sym, cx.type_i8(), GlobalKind::Imported);
 
+        // Only `extern_weak` lets the symbol stay unresolved, in which case it reads as null.
         if linkage == Linkage::ExternalWeak {
             #[cfg(feature = "master")]
             global1.add_attribute(VarAttribute::Weak);
@@ -486,8 +502,13 @@ fn check_and_apply_linkage<'gcc, 'tcx>(
         // zero.
         let real_name =
             format!("_rust_extern_with_linkage_{:016x}_{sym}", cx.tcx.stable_crate_id(LOCAL_CRATE));
-        let global2 = cx.define_global(&real_name, gcc_type, is_tls, attrs.link_section);
-        // FIXME(antoyo): set linkage.
+        let global2 = cx.define_global(
+            &real_name,
+            gcc_type,
+            GlobalKind::Internal,
+            is_tls,
+            attrs.link_section,
+        );
         let value = cx.const_ptrcast(global1.get_address(None), gcc_type);
         global2.global_set_initializer_rvalue(value);
         global2
