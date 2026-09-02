@@ -832,6 +832,10 @@ fn test_libcore_doctests(env: &Env, args: &TestArg) -> Result<(), String> {
         &"--edition",
         &edition,
         &"-Zunstable-options",
+        // FIXME: remove `-Zforce-unstable-if-unmarked` once the doctest of
+        // `core::io::ErrorKind`'s `Display` impl declares `#![feature(core_io)]` upstream: without
+        // it, that doctest fails to compile with `E0658` on any backend.
+        &"-Zforce-unstable-if-unmarked",
     ];
     for flag in &rustflags {
         command.push(flag);
