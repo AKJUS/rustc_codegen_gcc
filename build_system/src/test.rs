@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs::{File, remove_dir_all};
+use std::fs::{File, read_to_string, remove_dir_all};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+
+use boml::Toml;
 
 use crate::build;
 use crate::config::{Channel, ConfigInfo};
@@ -788,13 +790,60 @@ fn test_libcore_inner(env: &Env, args: &TestArg, release: bool) -> Result<(), St
     Ok(())
 }
 
+/// Returns the edition declared in the manifest of the given library crate, so that the doctests
+/// are run with the same edition as the crate they are extracted from.
+fn get_crate_edition(crate_dir: &Path) -> Result<String, String> {
+    let manifest_path = crate_dir.join("Cargo.toml");
+    let content = read_to_string(&manifest_path)
+        .map_err(|error| format!("Failed to read `{}`: {error:?}", manifest_path.display()))?;
+    let manifest = Toml::parse(&content)
+        .map_err(|error| format!("Failed to parse `{}`: {error:?}", manifest_path.display()))?;
+    manifest
+        .get_table("package")
+        .and_then(|package| package.get_string("edition"))
+        .map(|edition| edition.to_string())
+        .map_err(|error| {
+            format!("Failed to get `package.edition` from `{}`: {error:?}", manifest_path.display())
+        })
+}
+
 fn test_libcore_doctests(env: &Env, args: &TestArg) -> Result<(), String> {
     // FIXME: create a function "display_if_not_quiet" or something along the line.
     println!("[TEST] libcore doctests");
-    let path = get_sysroot_dir().join("sysroot_src/library/core");
-    let _ = remove_dir_all(path.join("target"));
-    // FIXME(antoyo): run in release mode when we fix the failures.
-    run_cargo_command(&[&"test"], Some(&path), env, args)?;
+
+    let library_dir = get_sysroot_dir().join("sysroot_src/library");
+    let edition = get_crate_edition(&library_dir.join("core"))?;
+    // `rustdoc` is called directly instead of through `cargo test --doc` because `cargo` builds its
+    // own `core` and passes it with `--extern`, which then conflicts with the `core` of the sysroot
+    // the doctests are linked against ("duplicate lang item" errors).
+    let toolchain = get_toolchain()?;
+    let toolchain_arg = format!("+{toolchain}");
+    let rustflags = split_args(&env.get("RUSTFLAGS").cloned().unwrap_or_default())?;
+    // `-Zunstable-options` is needed for `--test-args`.
+    let mut command: Vec<&dyn AsRef<OsStr>> = vec![
+        &"rustdoc",
+        &toolchain_arg,
+        &"--test",
+        &"core/src/lib.rs",
+        &"--crate-name",
+        &"core",
+        &"--crate-type",
+        &"lib",
+        &"--edition",
+        &edition,
+        &"-Zunstable-options",
+    ];
+    for flag in &rustflags {
+        command.push(flag);
+    }
+    // Additional arguments are forwarded to the test harness, so that a subset of the doctests can
+    // be run.
+    let test_args =
+        args.test_args.iter().map(|test_arg| format!("--test-args={test_arg}")).collect::<Vec<_>>();
+    for test_arg in &test_args {
+        command.push(test_arg);
+    }
+    run_command_with_output_and_env(&command, Some(&library_dir), Some(env))?;
     Ok(())
 }
 
