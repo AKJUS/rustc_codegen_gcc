@@ -709,20 +709,28 @@ pub fn generic_simd_intrinsic<'a, 'gcc, 'tcx>(
             return Ok(args[0].immediate());
         }
 
+        #[derive(Copy, Clone)]
+        enum Sign {
+            Unsigned,
+            Signed,
+        }
+        use Sign::*;
+
         enum Style {
             Float,
-            Int,
+            Int(Sign),
             Unsupported,
         }
 
         let in_style = match *in_elem.kind() {
-            ty::Int(_) | ty::Uint(_) => Style::Int,
+            ty::Int(_) => Style::Int(Signed),
+            ty::Uint(_) => Style::Int(Unsigned),
             ty::Float(_) => Style::Float,
             _ => Style::Unsupported,
         };
-
         let out_style = match *out_elem.kind() {
-            ty::Int(_) | ty::Uint(_) => Style::Int,
+            ty::Int(_) => Style::Int(Signed),
+            ty::Uint(_) => Style::Int(Unsigned),
             ty::Float(_) => Style::Float,
             _ => Style::Unsupported,
         };
@@ -740,6 +748,19 @@ pub fn generic_simd_intrinsic<'a, 'gcc, 'tcx>(
                         out_elem
                     }
                 );
+            }
+            (Style::Float, Style::Int(sign)) if name == sym::simd_as => {
+                let vector = args[0].immediate();
+                let elem_type =
+                    llret_ty.dyncast_vector().expect("vector return type").get_element_type();
+                let values: Vec<_> = (0..in_len)
+                    .map(|i| {
+                        let index = bx.context.new_rvalue_from_int(bx.usize_type, i as _);
+                        let value = bx.extract_element(vector, index);
+                        bx.cast_float_to_int(matches!(sign, Sign::Signed), value, elem_type)
+                    })
+                    .collect();
+                return Ok(bx.context.new_rvalue_from_vector(bx.location, llret_ty, &values));
             }
             _ => return Ok(bx.context.convert_vector(None, args[0].immediate(), llret_ty)),
         }
@@ -1344,32 +1365,28 @@ pub fn generic_simd_intrinsic<'a, 'gcc, 'tcx>(
             (true, false) => {
                 // FIXME(antoyo): dyncast_vector should not require a call to unqualified.
                 let arg_type = lhs.get_type().unqualified();
-                // FIXME(antoyo): this uses the same algorithm from saturating add, but add the
-                // negative of the right operand. Find a proper subtraction algorithm.
-                let rhs = bx.context.new_unary_op(None, UnaryOp::Minus, arg_type, rhs);
-
                 // FIXME(antoyo): convert lhs and rhs to unsigned.
-                let sum = lhs + rhs;
+                let difference = lhs - rhs;
                 let vector_type = arg_type.dyncast_vector().expect("vector type");
                 let unit = vector_type.get_num_units();
                 let a = bx.context.new_rvalue_from_int(elem_ty, ((elem_width as i32) << 3) - 1);
                 let width = bx.context.new_rvalue_from_vector(None, lhs.get_type(), &vec![a; unit]);
 
+                // The subtraction overflows when the operands have different signs and the result
+                // has a different sign than the left operand.
                 let xor1 = lhs ^ rhs;
-                let xor2 = lhs ^ sum;
-                let and =
-                    bx.context.new_unary_op(None, UnaryOp::BitwiseNegate, arg_type, xor1) & xor2;
-                let mask = and >> width;
+                let xor2 = lhs ^ difference;
+                let mask = (xor1 & xor2) >> width;
 
                 let one = bx.context.new_rvalue_one(elem_ty);
                 let ones =
                     bx.context.new_rvalue_from_vector(None, lhs.get_type(), &vec![one; unit]);
                 let shift1 = ones << width;
-                let shift2 = sum >> width;
+                let shift2 = difference >> width;
                 let mask_min = shift1 ^ shift2;
 
-                let and1 =
-                    bx.context.new_unary_op(None, UnaryOp::BitwiseNegate, arg_type, mask) & sum;
+                let and1 = bx.context.new_unary_op(None, UnaryOp::BitwiseNegate, arg_type, mask)
+                    & difference;
                 let and2 = mask & mask_min;
 
                 and1 + and2
