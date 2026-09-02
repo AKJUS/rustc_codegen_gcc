@@ -11,11 +11,12 @@ use rustc_codegen_ssa::diagnostics::ExpectedPointerMutability;
 use rustc_codegen_ssa::diagnostics::InvalidMonomorphization;
 use rustc_codegen_ssa::mir::operand::OperandRef;
 use rustc_codegen_ssa::mir::place::PlaceRef;
-use rustc_codegen_ssa::traits::{BaseTypeCodegenMethods, BuilderMethods};
+use rustc_codegen_ssa::traits::{BaseTypeCodegenMethods, BuilderMethods, LayoutTypeCodegenMethods};
 #[cfg(feature = "master")]
 use rustc_hir as hir;
 use rustc_middle::mir::BinOp;
-use rustc_middle::ty::layout::HasTyCtxt;
+use rustc_middle::span_bug;
+use rustc_middle::ty::layout::{HasTyCtxt, LayoutOf};
 use rustc_middle::ty::{self, Ty};
 use rustc_span::{ErrorGuaranteed, Span, Symbol, sym};
 
@@ -650,6 +651,39 @@ pub fn generic_simd_intrinsic<'a, 'gcc, 'tcx>(
                 let idx = bx.gcc_int(bx.usize_type, i as _);
                 let value = bx.extract_element(arg, idx);
                 bx.inttoptr(value, elem_type)
+            })
+            .collect();
+        return Ok(bx.context.new_rvalue_from_vector(bx.location, llret_ty, &values));
+    }
+
+    if name == sym::simd_arith_offset {
+        // This also checks that the first operand is a ptr type.
+        let pointee = in_elem.builtin_deref(true).unwrap_or_else(|| {
+            span_bug!(span, "must be called with a vector of pointer types as first argument")
+        });
+        let layout = bx.layout_of(pointee);
+        // The second argument must be a ptr-sized integer.
+        // (We don't care about the signedness, this is wrapping anyway.)
+        let (_, offsets_elem) = args[1].layout.ty.simd_size_and_type(bx.tcx());
+        if !matches!(offsets_elem.kind(), ty::Int(ty::IntTy::Isize) | ty::Uint(ty::UintTy::Usize)) {
+            span_bug!(
+                span,
+                "must be called with a vector of pointer-sized integers as second argument"
+            );
+        }
+
+        let pointee_type = bx.backend_type(layout);
+        let pointers = args[0].immediate();
+        let offsets = args[1].immediate();
+        let elem_type = llret_ty.dyncast_vector().expect("vector return type").get_element_type();
+        let values: Vec<_> = (0..in_len)
+            .map(|i| {
+                let index = bx.gcc_int(bx.usize_type, i as _);
+                let pointer = bx.extract_element(pointers, index);
+                let offset = bx.extract_element(offsets, index);
+                let pointer = bx.gep(pointee_type, pointer, &[offset]);
+                // GCC has no pointer vectors, so the lanes are `usize`.
+                bx.ptrtoint(pointer, elem_type)
             })
             .collect();
         return Ok(bx.context.new_rvalue_from_vector(bx.location, llret_ty, &values));
