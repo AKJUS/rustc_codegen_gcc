@@ -5,7 +5,6 @@ tests/ui/simd/issue-17170.rs
 tests/ui/simd/issue-39720.rs
 tests/ui/process/println-with-broken-pipe.rs
 tests/ui/simd/repr_packed.rs
-tests/ui/simd/intrinsic/generic-as.rs
 tests/ui/simd/simd-bitmask-notpow2.rs
 tests/ui/codegen/StackColoring-not-blowup-stack-issue-40883.rs
 tests/ui/numbers-arithmetic/u128-as-f32.rs
