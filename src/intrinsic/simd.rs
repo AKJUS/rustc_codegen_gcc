@@ -678,7 +678,7 @@ pub fn generic_simd_intrinsic<'a, 'gcc, 'tcx>(
         let elem_type = llret_ty.dyncast_vector().expect("vector return type").get_element_type();
         let values: Vec<_> = (0..in_len)
             .map(|i| {
-                let index = bx.gcc_int(bx.usize_type, i as _);
+                let index = bx.context.new_rvalue_from_long(bx.usize_type, i as _);
                 let pointer = bx.extract_element(pointers, index);
                 let offset = bx.extract_element(offsets, index);
                 let pointer = bx.gep(pointee_type, pointer, &[offset]);
@@ -755,7 +755,7 @@ pub fn generic_simd_intrinsic<'a, 'gcc, 'tcx>(
                     llret_ty.dyncast_vector().expect("vector return type").get_element_type();
                 let values: Vec<_> = (0..in_len)
                     .map(|i| {
-                        let index = bx.context.new_rvalue_from_int(bx.usize_type, i as _);
+                        let index = bx.context.new_rvalue_from_long(bx.usize_type, i as _);
                         let value = bx.extract_element(vector, index);
                         bx.cast_float_to_int(matches!(sign, Sign::Signed), value, elem_type)
                     })
