@@ -31,7 +31,7 @@ jobs:
           # "--asm-tests",
           "--test-libcore",
           "--extended-rand-tests",
-          "--extended-regex-example-tests",
+          "--extended-regex-example-tests --test-libcore-doctests",
           "--extended-regex-tests",
           "--test-successful-rustc --nb-parts 2 --current-part 0",
           "--test-successful-rustc --nb-parts 2 --current-part 1",
